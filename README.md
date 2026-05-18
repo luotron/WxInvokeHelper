@@ -11,6 +11,7 @@
 
 - 获取小程序登录 `code`
 - 获取 OAuth 授权后的 `redirectUrl`
+- QR 码扫码自动授权登录（无 UI，纯函数调用）
 - 解析 `code / state`
 - 便于自研后端换取业务 Token
 - 支持 HTTP API / Broadcast 调用
@@ -26,6 +27,14 @@
 ![小程序主动获取 code](./minicode.png)
 
 通过主动调用小程序登录能力，获取一次性登录 `code`，再交给自有服务端换取业务 Token。
+
+---
+
+### QR 码链接自动授权登录
+
+![OAuth RedirectUrl 获取 token](./autoOAuth.png)
+
+通过 OAuth 授权链路获取 `redirectUrl`，后续跟随业务重定向，完成自研 App 登录态获取。
 
 ---
 
@@ -45,9 +54,11 @@
 | 能力 | 说明 |
 |---|---|
 | `/getMiniCode` | 获取小程序登录 `code` |
-| `/getOauthCode` | 获取 OAuth `redirectUrl / code / state` |
+| `/getOauthCode` | 获取 OAuth `redirectUrl / code / state`（应用内 OAuth） |
+| `/autoOAuth` | QR 码扫码自动授权登录，无 UI 纯函数调用（第三方网站 OAuth） |
 | `/ping` | 检查模块是否注入成功 |
 | Broadcast | 支持同机 App 或 adb 调用 |
+| Toast 提示 | HTTP 服务启动时弹出 Toast 提醒 |
 | 版本适配 | 混淆类名集中维护，便于升级 |
 
 ---
@@ -135,6 +146,74 @@ curl -X POST http://127.0.0.1:18080/getOauthCode \
   "state": "test"
 }
 ```
+
+---
+
+### QR 码扫码自动授权登录（autoOAuth）
+
+适用于第三方网站使用微信扫码登录（`open.weixin.qq.com/connect/qrconnect`）的场景。
+全程无 UI，纯函数调用，自动完成：获取 UUID → 模拟扫码 → 确认授权 → 轮询获取 code。
+
+```bash
+curl -X POST http://127.0.0.1:18080/autoOAuth \
+  -H "Content-Type: application/json" \
+  -d '{
+    "oauthUrl": "https://open.weixin.qq.com/connect/qrconnect?scope=snsapi_login&appid=wx****&redirect_uri=https%3A%2F%2Fexample.com%2Fcallback&state=random_state",
+    "timeoutMs": 30000
+  }'
+```
+
+请求参数：
+
+| 参数 | 类型 | 必填 | 说明 |
+|---|---|---|---|
+| `oauthUrl` | String | ✅ | 完整的 OAuth QR 码登录链接 |
+| `timeoutMs` | Number | ❌ | 超时时间（毫秒），默认 30000 |
+
+返回示例：
+
+```json
+{
+  "ok": true,
+  "code": "061****",
+  "state": "random_state",
+  "uuid": "081fFql03gEb0w3A",
+  "redirectUrl": "https://example.com/callback?code=061****&state=random_state",
+  "appid": "wx****"
+}
+```
+
+内部流程：
+
+```
+1. HTTP GET → open.weixin.qq.com 获取 uuid
+2. CGI 2543 (qrconnect_authorize) → 模拟扫码
+3. CGI 1137 (qrconnect_authorize_confirm) → 确认授权
+4. HTTP 长轮询 → lp.open.weixin.qq.com 获取 code
+```
+
+---
+
+### Broadcast 调用示例
+
+除 HTTP API 外，也可通过 adb 广播调用（适用于无法使用 HTTP 的场景）：
+
+```bash
+# 获取小程序 Code
+adb shell am broadcast -a com.app.wxinvokexposed.ACTION_GET_MINI_CODE \
+  --es appId "wx**************"
+
+# 获取 OAuth Code（使用 base64 编码 URL 避免 & 转义问题）
+adb shell am broadcast -a com.app.wxinvokexposed.ACTION_GET_OAUTH_CODE \
+  --es oauthUrlB64 "$(echo -n 'https://open.xxx.com/connect/oauth2/authorize?...' | base64)"
+
+# QR 码扫码自动授权
+adb shell am broadcast -a com.app.wxinvokexposed.ACTION_AUTO_OAUTH \
+  --es oauthUrlB64 "$(echo -n 'https://open.weixin.qq.com/connect/qrconnect?...' | base64)" \
+  --el timeoutMs 30000
+```
+
+结果通过广播 `com.app.wxinvokexposed.ACTION_RESULT` 返回。
 
 ---
 
